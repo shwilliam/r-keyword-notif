@@ -1,10 +1,12 @@
 import SnooWrap from "snoowrap"
 import cron from "node-cron"
 import notifier from "node-notifier"
+import fs from 'fs'
 
 require("dotenv").config()
 
 const {
+  STORAGE_FILE,
   TWILIO_ACCOUNT_SID,
   TWILIO_AUTH_TOKEN,
   TWILIO_PHONE,
@@ -26,36 +28,63 @@ const r = new SnooWrap({
   password: R_PASS,
 })
 
-const getLatestLinks = async () => {
+const getLatestPosts = async () => {
   const result = await r
     .getSubreddit(R_SUBREDDIT)
     .search({ query: R_QUERY, sort: "new", time: "hour" })
-  const resultLinks = result.map((r) => r.permalink)
-  return resultLinks
+  return result
 }
 
-const notifyNewLinks = async () => {
-  const links = await getLatestLinks()
-  if (!links.length) console.log(":(")
-  else {
-    links.forEach((url) => {
-      notifier.notify(url)
-      console.log(url)
-    })
+const readFile = (filename: string, options?: {
+  encoding?: null;
+  flag?: string;
+}) => fs.readFileSync(filename, options ?? { encoding: 'utf-8' })
 
-    twilio.messages
-      .create({
-        body: `REDDIT POST ALERT:
--${links.join(`
--`)}
-`,
-        from: TWILIO_PHONE,
-        to: PHONE_TO,
-      })
-      .then((message) => console.log(message.sid))
+const readFoundIdsFile = () => {
+  const data = readFile(STORAGE_FILE)
+  if (!(typeof data === 'string')) {
+    console.log('error reading file')
+    return
   }
+  return data.split(',')
+}
+
+const writeFile = (filename: string, content: string) => fs.writeFileSync(filename, content)
+
+const notifyNewLinks = async () => {
+  const posts = await getLatestPosts()
+  const prevIds = readFoundIdsFile()
+  const newPosts = posts.filter(p => !prevIds.includes(p.id))
+
+  console.log('')
+
+  if (!newPosts.length) {
+    console.log("no new posts")
+    return
+  }
+
+  newPosts.forEach(({ permalink }) => {
+    notifier.notify(permalink)
+    console.log(permalink)
+  })
+
+
+  twilio.messages
+    .create({
+      body: `REDDIT POST ALERT:
+  -${newPosts.map(p => p.permalink).join(`
+  -`)}
+  `,
+      from: TWILIO_PHONE,
+      to: PHONE_TO,
+    })
+    .then((message) => console.log(message.sid))
+
+  writeFile(STORAGE_FILE, [...prevIds, ...newPosts.map(p => p.id)].join(','))
 }
 
 // every minute
 cron.schedule("* * * * *", notifyNewLinks)
+
+// check once right away
 notifyNewLinks()
